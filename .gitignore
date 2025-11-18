@@ -1,0 +1,28 @@
+# --- STM32CubeIDE & Eclipse ---
+/Debug/
+/Release/
+.settings/
+.mxproject
+*.launch
+
+# --- Build Output (Compilate) ---
+*.bin
+*.elf
+*.hex
+*.map
+*.list
+*.o
+*.d
+*.su
+
+# --- IDE Specific ---
+# .project
+# .cproject
+
+# --- CubeMX ---
+.mxproject.bak
+*.ioc.bak
+
+# --- Sistem de Operare ---
+.DS_Store
+Thumbs.db
