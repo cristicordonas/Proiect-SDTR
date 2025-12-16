@@ -145,11 +145,5 @@ void USART1_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-  if(GPIO_Pin == USER_BUTTON_Pin)
-  {
-    osSemaphoreRelease(buttonSemHandle);
-  }
-}
+
 /* USER CODE END 1 */

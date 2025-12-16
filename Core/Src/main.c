@@ -64,7 +64,7 @@ osSemaphoreId buttonSemHandle;
 /* USER CODE BEGIN PV */
 volatile uint8_t SystemMode = 0; // 0=Monitor, 1=Set Temp, 2=Set Hum
 volatile uint8_t TempThreshold = 20;
-volatile uint8_t HumThreshold = 60; // Noul prag (implicit 60%)
+volatile uint8_t HumThreshold = 60;
 uint8_t rx_buffer[1];
 uint8_t button_last_state = 1;
 /* USER CODE END PV */
@@ -111,7 +111,6 @@ void Set_Pin_Input(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin) {
   HAL_GPIO_Init(GPIOx, &GPIO_InitStruct);
 }
 
-/* --- DRIVER DHT11 (Același care a funcționat) --- */
 uint8_t DHT11_Read_Data(DHT11_Data_t *dht_data) {
   uint8_t i, j, byte;
   uint8_t data[5] = {0};
@@ -120,7 +119,7 @@ uint8_t DHT11_Read_Data(DHT11_Data_t *dht_data) {
   // 1. START
   Set_Pin_Output(DHT11_PORT, DHT11_PIN);
   HAL_GPIO_WritePin(DHT11_PORT, DHT11_PIN, GPIO_PIN_RESET);
-  MicroDelay(18000);
+  osDelay(18);
   HAL_GPIO_WritePin(DHT11_PORT, DHT11_PIN, GPIO_PIN_SET);
   MicroDelay(20);
   Set_Pin_Input(DHT11_PORT, DHT11_PIN);
@@ -241,7 +240,7 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of taskRT */
-  osThreadDef(taskRT, vTaskRT, osPriorityNormal, 0, 256);
+  osThreadDef(taskRT, vTaskRT, osPriorityNormal, 0, 128);
   taskRTHandle = osThreadCreate(osThread(taskRT), NULL);
 
   /* definition and creation of taskComm */
@@ -472,11 +471,19 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if(GPIO_Pin == USER_BUTTON_Pin)
+  {
+    osSemaphoreRelease(buttonSemHandle);
+  }
+}
+
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
   if (huart->Instance == USART1)
   {
-    if (SystemMode == 1) // Doar în modul de Setare acceptăm comenzi
+    if (SystemMode == 1)
     {
       if (rx_buffer[0] == '+') {
         TempThreshold++;
@@ -484,9 +491,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
       else if (rx_buffer[0] == '-') {
         TempThreshold--;
       }
-      // Putem adăuga cifre aici, dar e mai complex de parsat
     }
-    else if (SystemMode == 2) // Mod Setare Umiditate
+    else if (SystemMode == 2)
     {
       if (rx_buffer[0] == '+') {
         HumThreshold++;
@@ -510,7 +516,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void vTaskRT(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-  // 1. Pornim Timerul Hardware pentru MicroDelay
   HAL_TIM_Base_Start(&htim14);
   DHT11_Data_t SensorData;
   uint8_t status;
@@ -520,15 +525,9 @@ void vTaskRT(void const * argument)
   {
     if (SystemMode == 0)
     {
-      // === MOD MONITORIZARE ===
-      // Citim senzorul
-      taskENTER_CRITICAL();
       status = DHT11_Read_Data(&SensorData);
-      taskEXIT_CRITICAL();
       if (status == 0)
       {
-        // --- LOGICA NOUĂ LED (MATRIX) ---
-        // Resetăm LED-urile
         HAL_GPIO_WritePin(GPIOB, LED_RED_PIN|LED_GREEN_PIN|LED_BLUE_PIN, GPIO_PIN_RESET);
 
         if (SensorData.Temperature < TempThreshold)
@@ -564,9 +563,6 @@ void vTaskRT(void const * argument)
             HAL_GPIO_WritePin(GPIOB, LED_RED_PIN, GPIO_PIN_SET);
           }
         }
-        // Trimitem datele spre TaskBT
-        // Împachetăm: Modul (bit 31) | Temp (High) | Hum (Low)
-        // Putem trimite doar datele, TaskBT va ști modul din variabila globală
         uint32_t packed = (SensorData.Temperature << 8) | SensorData.Humidity;
         osMessagePut(commsQueueHandle, packed, 0);
       }
@@ -579,11 +575,8 @@ void vTaskRT(void const * argument)
     }
     else
     {
-      // === MOD SETARE (LED ALB INTERMITENT) ===
-      // Nu citim senzorul, doar semnalizăm că așteptăm input
+
       HAL_GPIO_TogglePin(GPIOB, LED_RED_PIN|LED_GREEN_PIN|LED_BLUE_PIN);
-      // Trimitem un semnal "dummy" în coadă ca să trezim TaskBT să afișeze meniul
-      // Trimitem 0xFFFFFFFF ca semn special
       osMessagePut(commsQueueHandle, 0xFFFFFFFF, 0);
     }
 
@@ -606,6 +599,7 @@ void vTaskComm(void const * argument)
   char bt_msg[80];
   uint32_t received_data;
   uint8_t temp, hum;
+
   static uint8_t last_temp = 255;
   static uint8_t last_hum = 255;
   static uint8_t last_t_thresh = 255;
@@ -613,7 +607,7 @@ void vTaskComm(void const * argument)
   static uint8_t last_mode = 255;
 
   uint8_t current_mode;
-  uint8_t change_detected = 0; // Flag
+  uint8_t change_detected = 0;
   HAL_UART_Receive_IT(&huart1, rx_buffer, 1);
   for(;;)
   {
@@ -622,38 +616,32 @@ void vTaskComm(void const * argument)
     if (event.status == osEventMessage)
     {
       received_data = event.value.v;
-      current_mode = SystemMode; // Citim modul actual
-      change_detected = 0;       // Resetăm flag-ul
+      current_mode = SystemMode;
+      change_detected = 0;
 
       if (current_mode != last_mode) {
         change_detected = 1;
       }
 
-      if (current_mode == 0)
+      if (current_mode == 0 && received_data != 0xFFFFFFFF)
       {
-        // --- MOD NORMAL (Monitorizare) ---
-        // Pachetul contine date valide doar daca nu e 0xFFFFFFFF
-        if (received_data != 0xFFFFFFFF) {
-          temp = (received_data >> 8) & 0xFF;
-          hum = received_data & 0xFF;
+        temp = (received_data >> 8) & 0xFF;
+        hum = received_data & 0xFF;
 
-          // Verificăm dacă s-a schimbat Temperatura, Umiditatea sau Pragul
-          if (temp != last_temp || hum != last_hum ||
-        	  TempThreshold != last_t_thresh || HumThreshold != last_h_thresh) {
-            change_detected = 1;
-          }
+        if (temp != last_temp || hum != last_hum ||
+      	  TempThreshold != last_t_thresh || HumThreshold != last_h_thresh) {
+          change_detected = 1;
+        }
 
-          if (change_detected == 1) {
-        	sprintf(bt_msg, "Live: %dC | %d%% (Prag T:%d H:%d)\r\n", temp, hum, TempThreshold, HumThreshold);
-            HAL_UART_Transmit(&huart1, (uint8_t*)bt_msg, strlen(bt_msg), 100);
+        if (change_detected == 1) {
+          sprintf(bt_msg, "Live: %dC | %d%% (Prag T:%d H:%d)\r\n", temp, hum, TempThreshold, HumThreshold);
+          HAL_UART_Transmit(&huart1, (uint8_t*)bt_msg, strlen(bt_msg), 100);
 
-            // Actualizăm istoricul
-            last_temp = temp;
-            last_hum = hum;
-            last_t_thresh = TempThreshold;
-            last_h_thresh = HumThreshold;
-            last_mode = current_mode;
-          }
+          last_temp = temp;
+          last_hum = hum;
+          last_t_thresh = TempThreshold;
+          last_h_thresh = HumThreshold;
+          last_mode = current_mode;
         }
       }
       else if (current_mode == 1)
@@ -664,7 +652,6 @@ void vTaskComm(void const * argument)
     	if (change_detected == 1) {
     	  sprintf(bt_msg, ">> SETARE TEMPERATURA <<\r\nActual: %d C\r\n(+/- pt modificare)\r\n", TempThreshold);
     	  HAL_UART_Transmit(&huart1, (uint8_t*)bt_msg, strlen(bt_msg), 100);
-    	  // Actualizăm istoricul
     	  last_t_thresh = TempThreshold;
     	  last_mode = current_mode;
         }
@@ -677,7 +664,6 @@ void vTaskComm(void const * argument)
     	if (change_detected == 1) {
           sprintf(bt_msg, ">> SETARE UMIDITATE <<\r\nActual: %d %% (+/-)\r\n", HumThreshold);
     	  HAL_UART_Transmit(&huart1, (uint8_t*)bt_msg, strlen(bt_msg), 100);
-    	  // Actualizăm istoricul
     	  last_h_thresh = HumThreshold;
     	  last_mode = current_mode;
         }
